@@ -19,7 +19,9 @@
 
 typedef struct erow {
 	int size;
+  int renderSize;
 	char* chars;
+  char* render;
 } erow;
 
 struct editorConfig {
@@ -103,14 +105,14 @@ int editorReadKey(){
 				if (seq[2] == '~'){
 					switch (seq[1]){
 						case '1': return HOME;
-            			case '3': return DEL;
-            			case '4': return END;
+            case '3': return DEL;
+            case '4': return END;
 						case '5': return PAGE_UP;
 						case '6': return PAGE_DOWN;
 						case '7': return HOME;
-            			case '8': return END;
+            case '8': return END;
 					}
-				}	
+				}
 			} else{
 				switch (seq[1]){
 					case 'A': return ARROW_UP;
@@ -149,7 +151,24 @@ int getWindowSize(int *rows, int *cols){
 
 /*** file IO */
 
-
+void editorUpdateRow(erow* row){
+  // EVERY TAB IS CONVERTED TO 2 SPACES;
+  free(row->render);
+  row->render = malloc(row->size+1);
+  row->renderSize = row->size+1;
+  int idx = 0;
+  for (int i =0; i<row->size; i++){
+    if (row->chars[i]=='\t'){
+     row->render[idx++] = ' ';
+     row->render[idx++] = ' ';
+     row->renderSize++;
+     row->render = realloc(row->render, row->renderSize+1);
+    }else{
+      row->render[idx++] = row->chars[i];
+    }
+  }
+  row->render[idx]='\0';
+}
 
 void editorAppendRow( char* s, ssize_t len ){
 	E.row = realloc(E.row, sizeof(erow)*(E.numrows+1));
@@ -160,6 +179,11 @@ void editorAppendRow( char* s, ssize_t len ){
 	memcpy(E.row[at].chars, s, len);
 	E.row[at].chars[len] = '\0';
 	E.numrows += 1;
+
+  E.row[at].renderSize = 0;
+  E.row[at].render = NULL;
+
+  editorUpdateRow(&E.row[at]);
 }
 
 
@@ -212,11 +236,11 @@ char* lineNumber(int number){
   return numString;
 }
 
-void drawLine(struct wbuf *wb, erow row){
+void drawLine(struct wbuf *wb, erow *row){
   // if lineLen>0ffset -> print line+offset
   // else print ""
   int of = E.coloffs;
-  int lineLen = row.size - of;
+  int lineLen = row->renderSize - of;
 
   if (lineLen < 0){
 		wbAppend(wb, "",0);
@@ -225,22 +249,22 @@ void drawLine(struct wbuf *wb, erow row){
 	if (lineLen>E.textcols){
     lineLen = E.textcols;
   }
-	wbAppend(wb, row.chars+of, lineLen);
+	wbAppend(wb, row->render+of, lineLen);
 }
 
 void editorDrawRows(struct wbuf *wb){
 	int y ;
-  int marginSize = 5;
+
   
 	for (y=E.rowoffs; y< E.screenrows+E.rowoffs-E.isBottomBar; y++){
-    wbAppend(wb, lineNumber(y),marginSize); // append a line number
+    wbAppend(wb, lineNumber(y),E.marginSize); // append a line number
 //    wbAppend(wb, "\x1b[K", 3); // clear line maybe this don't do anythign?
 		if (y<E.numrows){  // append line of characters
       
 	
 			// print lines
 			//wbAppend(wb, E.row[y].chars, lineLen);
-      drawLine(wb,E.row[y]);
+      drawLine(wb,E.row+y);
 		}
 		else{ // append eof symbol
 			wbAppend(wb, "~", 1);
@@ -254,7 +278,7 @@ void editorDrawRows(struct wbuf *wb){
     }
 	}
   char bottom[100];
-  sprintf(bottom, "     cursor {x:%2d,%2d y:%2d,%2d} offset: %d, %d textSpace: %dx%d screenSize: %dx%d", 
+  sprintf(bottom, "     cur {x:%2d,%2d y:%2d,%2d} offs:%d, %d  txt:%dx%d scrn:%dx%d", 
           E.cx,E.oldx, E.cy,E.oldy, E.coloffs, E.rowoffs, E.textcols, E.textrows, E.screencols,E.screenrows);
     
 	wbAppend(wb, "\r\n", 2); // next line
@@ -264,17 +288,22 @@ void editorDrawRows(struct wbuf *wb){
 	wbAppend(wb, "\x1b[K", 3); // clear line
 }
 
+erow* cursorLine(){
+  if (E.cy+E.rowoffs<E.numrows)
+    return &E.row[E.cy+E.rowoffs];
+  
+  return NULL;
+}
 void scrollCursor(){
   // to right side
-  if (E.cx+3>E.screencols){
-    E.coloffs++;
-    E.cx--;
+  if (E.cx-E.coloffs+3>E.textcols){
+    E.coloffs = E.cx-E.textcols +3 ;
   }// to the left side
-   if (E.cx < 3 && E.coloffs>0) {
-    E.coloffs--;
-    E.cx++;
+   if (E.cx < E.coloffs) {
+    E.coloffs=E.cx;
+//    E.cx++;
   }
-  if (E.cy+3 > E.screenrows ) { // to bottom
+  if (E.cy+2> E.textrows ) { // to bottom
     E.rowoffs++;
     E.cy--;
 //    E.cy--;
@@ -300,7 +329,7 @@ void editorRefreshScreen(){
 
 	// printing the cursor to the screen
 	char buf[32];
-	snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy+1, E.cx+1); // reposition cursor
+	snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy+1, E.cx+E.marginSize+1-E.coloffs); // reposition cursor
 	wbAppend(&wb, buf, strlen(buf));
 
 	
@@ -311,17 +340,15 @@ void editorRefreshScreen(){
 	wbFree(&wb);
 
 }
-erow* cursorLine(){
-  if (E.cy+E.rowoffs<E.numrows)
-    return &E.row[E.cy+E.rowoffs];
-  
-  return NULL;
-}
 void editorMoveCursor(int key){
   switch (key) {
 		case ARROW_LEFT:
-			if (E.cx !=E.marginSize){
+			if (E.cx !=0){
 				E.cx--;
+        E.oldx = E.cx;
+      }else if (E.cx ==0&& E.cy!=0){
+        E.cy--;
+        E.cx = cursorLine()->size;
         E.oldx = E.cx;
       }
 			break;
@@ -329,8 +356,9 @@ void editorMoveCursor(int key){
 			if (E.cy !=0){
 				E.cy--;
 
-       if (cursorLine()->size+ E.marginSize <= E.oldx){
-          E.cx = cursorLine()->size+ E.marginSize- E.coloffs;
+       if (cursorLine()->size <= E.oldx){
+          E.cx = cursorLine()->size;
+
         }
         else {E.cx =E.oldx;}
       }
@@ -338,19 +366,19 @@ void editorMoveCursor(int key){
 		case ARROW_DOWN:
 			if (E.cy < E.screenrows -1 ){
 				E.cy++;
-       if (cursorLine()->size+ E.marginSize <= E.oldx){
-          E.cx = cursorLine()->size+ E.marginSize-E.coloffs;
+       if (cursorLine()->size <= E.oldx){
+          E.cx = cursorLine()->size;
         }
         else {E.cx =E.oldx;}
         // snap to line
       }
 			break;
 		case ARROW_RIGHT:
-			if (E.cx < E.screencols-1 && E.cx-E.marginSize< cursorLine()->size){
+			if (E.cx - E.coloffs < E.screencols && E.cx< cursorLine()->renderSize-1){
 				E.cx++;
         E.oldx = E.cx;
-      }else if (E.cx-E.marginSize== cursorLine()->size){
-        E.cx = E.marginSize;
+      }else if (E.cx>= cursorLine()->renderSize-1){
+        E.cx= 0;
         E.cy++;
         E.oldx = E.cx;
       }
@@ -376,8 +404,15 @@ void editorProcessKeypress(){
 			write(STDOUT_FILENO, "\x1b[H", 3); 
 			exit(0);
 			break;
+    case CTRL_KEY('z'):
+      E.coloffs--;
+      E.cx--;
+      E.oldx = E.cx;
+      break;
     case CTRL_KEY('x'):
       E.coloffs++;
+      E.cx++;
+      E.oldx = E.cx;
       break;
 		case ARROW_LEFT:
 		case ARROW_RIGHT:
@@ -398,8 +433,8 @@ void editorProcessKeypress(){
 }
 
 void initEditor(){
-	E.cx = 5;
-  E.oldx = 5;
+	E.cx = 0;
+  E.oldx = E.cx;
 	E.cy = 0;
 	E.rowoffs=0;
 	E.coloffs=0;
