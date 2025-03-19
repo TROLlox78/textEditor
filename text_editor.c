@@ -34,7 +34,7 @@ struct editorConfig {
   int marginSize;
 	erow* row;
    
-
+  char* filename;
   bool isNumberMargin;
   bool isBottomBar;
   bool wrapText;
@@ -149,6 +149,9 @@ int getWindowSize(int *rows, int *cols){
 	}
 }
 
+/**** text editing */
+
+
 /*** file IO */
 
 void editorUpdateRow(erow* row){
@@ -188,10 +191,12 @@ void editorAppendRow( char* s, ssize_t len ){
 
 
 void editorOpen(char* filename){
-	
+  free(E.filename);	
+  E.filename = strdup(filename);
+
 	FILE* fp = fopen(filename, "r");
 	if (!fp) die ("fopen");
-
+ 
 	char* line = NULL;
 	size_t linecap = 0;
 	ssize_t linelen;
@@ -251,7 +256,22 @@ void drawLine(struct wbuf *wb, erow *row){
   }
 	wbAppend(wb, row->render+of, lineLen);
 }
+void drawBottomBar(struct wbuf *wb){
+  char bottom[100];
+  sprintf(bottom, " %10s cur {x:%2d,%2d y:%2d,%2d} offs:%d, %d txt:%dx%d scrn:%dx%d", E.filename!=NULL? E.filename:"No File",
+        E.cx,E.oldx, E.cy,E.oldy, E.coloffs, E.rowoffs, E.textcols, E.textrows, E.screencols,E.screenrows);
+   
+  wbAppend(wb, "\r\n", 2); // next line
+  wbAppend(wb, "\x1b[K", 3); // clear line
+  wbAppend(wb, "\x1b[7m",4); // invert colour
+  wbAppend(wb,bottom,strlen(bottom));
+  for(uint i=0; i<E.screencols-strlen(bottom);i++){
+    wbAppend(wb," ",1);
+  }
+  wbAppend(wb, "\x1b[m",3); // switch back to normal formatting
+	wbAppend(wb, "\x1b[K", 3); // clear line
 
+}
 void editorDrawRows(struct wbuf *wb){
 	int y ;
 
@@ -277,22 +297,17 @@ void editorDrawRows(struct wbuf *wb){
 		     
     }
 	}
-  char bottom[100];
-  sprintf(bottom, "     cur {x:%2d,%2d y:%2d,%2d} offs:%d, %d  txt:%dx%d scrn:%dx%d", 
-          E.cx,E.oldx, E.cy,E.oldy, E.coloffs, E.rowoffs, E.textcols, E.textrows, E.screencols,E.screenrows);
-    
-	wbAppend(wb, "\r\n", 2); // next line
-	wbAppend(wb, "\x1b[K", 3); // clear line
-  wbAppend(wb,bottom,strlen(bottom));
+    if(E.isBottomBar){
+      drawBottomBar(wb);
+    }
+ 
+  }
 
-	wbAppend(wb, "\x1b[K", 3); // clear line
-}
-
-erow* cursorLine(){
+int cursorLineLen(){
   if (E.cy+E.rowoffs<E.numrows)
-    return &E.row[E.cy+E.rowoffs];
-  
-  return NULL;
+    return E.row[E.cy+E.rowoffs].renderSize-1;
+  else
+  return 0;
 }
 void scrollCursor(){
   // to right side
@@ -348,7 +363,7 @@ void editorMoveCursor(int key){
         E.oldx = E.cx;
       }else if (E.cx ==0&& E.cy!=0){
         E.cy--;
-        E.cx = cursorLine()->size;
+        E.cx = cursorLineLen();
         E.oldx = E.cx;
       }
 			break;
@@ -356,8 +371,8 @@ void editorMoveCursor(int key){
 			if (E.cy !=0){
 				E.cy--;
 
-       if (cursorLine()->size <= E.oldx){
-          E.cx = cursorLine()->size;
+       if (cursorLineLen()<= E.oldx){
+          E.cx = cursorLineLen();
 
         }
         else {E.cx =E.oldx;}
@@ -366,18 +381,18 @@ void editorMoveCursor(int key){
 		case ARROW_DOWN:
 			if (E.cy < E.screenrows -1 ){
 				E.cy++;
-       if (cursorLine()->size <= E.oldx){
-          E.cx = cursorLine()->size;
+       if (cursorLineLen() <= E.oldx){
+          E.cx = cursorLineLen();
         }
         else {E.cx =E.oldx;}
         // snap to line
       }
 			break;
 		case ARROW_RIGHT:
-			if (E.cx - E.coloffs < E.screencols && E.cx< cursorLine()->renderSize-1){
+			if (E.cx - E.coloffs < E.screencols && E.cx< cursorLineLen()){
 				E.cx++;
         E.oldx = E.cx;
-      }else if (E.cx>= cursorLine()->renderSize-1){
+      }else if (E.cx>= cursorLineLen()){
         E.cx= 0;
         E.cy++;
         E.oldx = E.cx;
@@ -388,13 +403,24 @@ void editorMoveCursor(int key){
 }
 void editorRowOffset(int key){
 	if (key == PAGE_DOWN){
-		E.rowoffs+=1;
-		return;
+		E.rowoffs+=E.textrows/2;
 	}
-	if (key == PAGE_UP && E.rowoffs>0)
-	{E.rowoffs--;}
-}
+  else if (key == PAGE_UP){
+    E.rowoffs-=E.textrows/2;
+    if (E.rowoffs<0){E.rowoffs=0;}// move bound check to editorMoveCursor()
+  }
 
+}
+void cursorSnap(int key){
+  if (key == HOME){
+    E.cx=0;
+    E.oldx=0;
+  }
+  if (key == END){
+    E.cx = cursorLineLen();
+    E.oldx = E.cx;
+  }
+}
 void editorProcessKeypress(){
 	int c = editorReadKey();
 
@@ -414,6 +440,11 @@ void editorProcessKeypress(){
       E.cx++;
       E.oldx = E.cx;
       break;
+//    case CTRL_KEY(ARROW_DOWN):
+//      editorRowOffset(c);
+    case CTRL_KEY(' '):
+      // launch command
+      break;
 		case ARROW_LEFT:
 		case ARROW_RIGHT:
 		case ARROW_UP:
@@ -422,12 +453,11 @@ void editorProcessKeypress(){
 			break;
 		case PAGE_UP:
 		case PAGE_DOWN:
-			// temporary keybinding
 			editorRowOffset(c);
 			break;
 		case HOME:
 		case END:
-			//cursor move
+		  cursorSnap(c);	
 			break;
 	}
 }
@@ -440,6 +470,7 @@ void initEditor(){
 	E.coloffs=0;
 	E.numrows = 0;
 	E.row = NULL;
+  E.filename = NULL;
   E.isBottomBar = true;
   E.marginSize = 5;
   E.isNumberMargin = true;
